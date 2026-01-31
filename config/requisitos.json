@@ -1,0 +1,16 @@
+{
+    "eps_requirements": {
+        "SANITAS": {
+            "required_files": ["factura", "autorizacion", "rids", "historia_clinica"],
+            "zip_check": true
+        },
+        "NUEVA_EPS": {
+            "required_files": ["factura", "voucher", "remision"],
+            "zip_check": false
+        },
+        "DEFAULT": {
+            "required_files": ["factura"],
+            "zip_check": false
+        }
+    }
+}
