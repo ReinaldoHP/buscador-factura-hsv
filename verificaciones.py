@@ -14,64 +14,80 @@ class Verificaciones:
             print(f"Error cargando configuración: {e}")
             return {}
 
-    def obtener_requisitos(self, eps):
-        """Devuelve los requisitos para una EPS específica o por defecto."""
-        eps_key = eps.upper()
-        if eps_key in self.config.get("eps_requirements", {}):
-            return self.config["eps_requirements"][eps_key]
-        return self.config["eps_requirements"]["DEFAULT"]
+    def get_expected_filename(self, code, nit, factura):
+        """Genera el nombre base esperado: CODIGO_NIT_FACTURA"""
+        return f"{code}_{nit}_{factura}"
 
-    def verificar_factura(self, archivos_encontrados, eps):
+    def verificar_factura(self, archivos_encontrados, eps, numero_factura, nit_val=None):
         """
-        Verifica si los archivos encontrados cumplen con los requisitos de la EPS.
-        archivos_encontrados: Lista de objetos Path (o strings de rutas).
-        eps: Nombre de la EPS.
+        Verifica si los archivos encontrados cumplen con los requisitos de la EPS
+        y siguen el patrón de la imagen (Prefijo_Nit_Factura).
         """
-        requisitos = self.obtener_requisitos(eps)
-        archivos_requeridos = requisitos.get("required_files", [])
-        chequear_zip = requisitos.get("zip_check", False)
-
+        eps_key = eps.upper() if eps else "OTRA"
+        eps_config = self.config.get("eps_config", {})
+        
+        # Obtener configuración de la EPS o usar OTRA por defecto
+        reglas = eps_config.get(eps_key, eps_config.get("OTRA", {}))
+        
+        prefijo_factura = reglas.get("factura", "FEV")
+        prefijo_evidencia = reglas.get("evidencia", "PDE")
+        
+        nit = nit_val if nit_val else self.config.get("nit", "899999032")
+        common_files = self.config.get("common_files", [])
+        
         estado = {
-            "completa": True,
-            "archivos_presentes": [],
-            "archivos_faltantes": [],
+            "completa": False,
+            "archivos_identificados": [], # Lista de tuplas (NombreArchivo, TipoDetectado, EsCorrecto)
+            "faltantes_obligatorios": [],
             "detalles": []
         }
 
-        # Normalizar nombres de archivos encontrados para búsqueda simple
-        # Se guarda una lista plana de todos los archivos disponibles (incluyendo contenido de ZIPs)
-        lista_archivos_flat = []
-
+        # Preparar lista plana de archivos encontrados (nombre)
+        lista_archivos = []
         for archivo_path in archivos_encontrados:
             archivo_path = Path(archivo_path)
-            lista_archivos_flat.append(archivo_path.name.lower())
-            
-            # Si se requiere chequear dentro de ZIPs y es un ZIP
-            if chequear_zip and archivo_path.suffix.lower() == '.zip':
-                contenido_zip = LectorZIP.listar_contenido(archivo_path)
-                # Agregar contenido del zip a la lista plana, solo el nombre del archivo
-                lista_archivos_flat.extend([Path(f).name.lower() for f in contenido_zip])
+            lista_archivos.append(archivo_path.name)
+            if archivo_path.suffix.lower() == '.zip':
+                try:
+                    contenido_zip = LectorZIP.listar_contenido(archivo_path)
+                    lista_archivos.extend([Path(f).name for f in contenido_zip])
+                except: pass
 
-        # Verificar cada requisito
-        for req in archivos_requeridos:
-            req_lower = req.lower()
-            encontrado = False
-            
-            # Búsqueda simple: si el string requisito está en el nombre del archivo
-            for nombre_archivo in lista_archivos_flat:
-                if req_lower in nombre_archivo:
-                    encontrado = True
-                    break
-            
-            if encontrado:
-                estado["archivos_presentes"].append(req)
-            else:
-                estado["archivos_faltantes"].append(req)
-                estado["completa"] = False
+        # 1. Buscar Factura Principal (Obligatorio)
+        # Patrón: PREFIJO_NIT_FACTURA (puede haber extension)
+        patron_factura = self.get_expected_filename(prefijo_factura, nit, numero_factura)
+        factura_encontrada = False
+        
+        for archivo in lista_archivos:
+            if patron_factura in archivo:
+                estado["archivos_identificados"].append((archivo, f"Factura ({prefijo_factura})", True))
+                factura_encontrada = True
+        
+        if not factura_encontrada:
+            estado["faltantes_obligatorios"].append(f"Factura ({patron_factura})")
 
-        if estado["completa"]:
-            estado["detalles"].append("Todos los soportes requeridos fueron encontrados.")
+        # 2. Buscar Evidencia (Opcional o checkear si existe)
+        patron_evidencia = self.get_expected_filename(prefijo_evidencia, nit, numero_factura)
+        for archivo in lista_archivos:
+             if patron_evidencia in archivo:
+                 estado["archivos_identificados"].append((archivo, f"Evidencia ({prefijo_evidencia})", True))
+        
+        # 3. Buscar Archivos Comunes
+        for item in common_files:
+            code = item["code"]
+            name = item["name"]
+            patron = self.get_expected_filename(code, nit, numero_factura)
+            
+            for archivo in lista_archivos:
+                if patron in archivo:
+                    estado["archivos_identificados"].append((archivo, name, True))
+
+        # Determinar estado final
+        if factura_encontrada:
+            estado["completa"] = True
+            estado["detalles"].append("Factura encontrada y verificada.")
         else:
-            estado["detalles"].append(f"Faltan soportes: {', '.join(estado['archivos_faltantes'])}")
+            estado["completa"] = False
+            estado["detalles"].append(f"Falta factura: {patron_factura}")
 
         return estado

@@ -4,24 +4,37 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 import threading
 import os
+import sys
 import shutil
+import tempfile
 from pathlib import Path
 from buscador import Buscador
 from verificaciones import Verificaciones
 from lector_pdf import LectorPDF
 from lector_zip import LectorZIP
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("Buscador de Facturas HSV")
+        self.root.title("Buscador de Facturas HSV - Reinaldo RH")
         self.root.geometry("1000x700")
         
         # Estilo para Treeview (ttkbootstrap lo maneja, pero los tags necesitan colores compatibles)
         # Se definirá en _setup_ui
 
         # Configuración
-        self.config_path = Path("config/requisitos.json")
+        self.config_path = Path(resource_path("config/requisitos.json"))
         self.verificador = Verificaciones(self.config_path)
         self.buscador = None 
         self.item_paths = {} # Mapeo de ID de treeview a Path real
@@ -30,6 +43,7 @@ class App:
         self.ruta_raiz = tk.StringVar()
         self.factura = tk.StringVar()
         self.eps = tk.StringVar()
+        self.nit = tk.StringVar(value="899999032")
         
         self._setup_ui()
 
@@ -59,9 +73,14 @@ class App:
         factura_entry.bind("<Return>", lambda event: self.iniciar_busqueda())
 
         ttk.Label(grid_frame, text="EPS:").grid(row=0, column=2, padx=5, pady=5)
-        eps_combo = ttk.Combobox(grid_frame, textvariable=self.eps, values=["SANITAS", "NUEVA_EPS", "OTRA"])
+        eps_combo = ttk.Combobox(grid_frame, textvariable=self.eps, values=[
+            "FAMISANAR", "SALUD TOTAL", "COOSALUD", "SANITAS", "COMPENSAR", "NUEVA EPS", "FOMAG", "OTRA"
+        ])
         eps_combo.grid(row=0, column=3, padx=5, pady=5)
         eps_combo.current(0)
+
+        ttk.Label(grid_frame, text="NIT Proveedor:").grid(row=0, column=4, padx=5, pady=5)
+        ttk.Entry(grid_frame, textvariable=self.nit, width=15).grid(row=0, column=5, padx=5, pady=5)
 
         # Botón Buscar
         ttk.Button(main_frame, text="BUSCAR FACTURA", command=self.iniciar_busqueda).pack(pady=10)
@@ -93,6 +112,7 @@ class App:
 
         # Menu Contextual
         self.menu_contextual = tk.Menu(self.root, tearoff=0)
+        self.menu_contextual.add_command(label="Abrir", command=lambda: self.abrir_archivo())
         self.menu_contextual.add_command(label="Abrir Ubicación", command=self.abrir_ubicacion)
         self.menu_contextual.add_separator()
         self.menu_contextual.add_command(label="Nueva Carpeta", command=self.crear_carpeta)
@@ -102,12 +122,19 @@ class App:
         self.menu_contextual.add_command(label="Eliminar", command=self.eliminar_elemento)
 
         self.tree.bind("<Button-3>", self.mostrar_menu_contextual)
+        self.tree.bind("<Double-1>", self.on_double_click)
 
-        # Status Bar
+        # Status Bar con Firma
+        bottom_frame = ttk.Frame(self.root)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
         self.status_var = tk.StringVar()
         self.status_var.set("Listo.")
-        stat_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        stat_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        stat_bar = ttk.Label(bottom_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        stat_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        firma_label = ttk.Label(bottom_frame, text="Reinaldo RH", font=("Arial", 8), foreground="gray")
+        firma_label.pack(side=tk.RIGHT, padx=5)
 
     def seleccionar_directorio(self):
         directorio = filedialog.askdirectory()
@@ -139,6 +166,7 @@ class App:
 
     def _proceso_busqueda(self, factura):
         eps = self.eps.get()
+        nit_proveedor = self.nit.get()
 
         if not self.buscador:
             self.buscador = Buscador(self.ruta_raiz.get())
@@ -158,47 +186,63 @@ class App:
                 folder_node = self.tree.insert("", tk.END, values=(item_path.name, "Carpeta", "Encontrada", str(item_path)), open=True)
                 self.item_paths[folder_node] = item_path
                 
-                archivos = self.buscador.listar_archivos(item_path)
+                # Listar todo el contenido
+                contenido = self.buscador.listar_archivos(item_path)
+                
+                # Filtrar archivos para verificación (solo PDFs en raíz cuentan para "completa" por ahora, o ajustamos lógica)
+                archivos_para_verificacion = [f for f in contenido if f.is_file() and f.suffix.upper() in ['.PDF', '.ZIP']]
                 
                 # Verificar estado de la factura
-                resultado_verificacion = self.verificador.verificar_factura(archivos, eps)
+                resultado_verificacion = self.verificador.verificar_factura(archivos_para_verificacion, eps, factura, nit_proveedor)
                 status_text = "COMPLETA" if resultado_verificacion["completa"] else "INCOMPLETA"
                 
                 self.tree.insert(folder_node, tk.END, values=("Estado Factura", "Info", status_text, resultado_verificacion["detalles"][0]))
 
-                # Listar archivos individuales
-                for archivo in archivos:
-                    tipo = archivo.suffix.upper()
-                    info_extra = ""
-                    
-                    if tipo == '.PDF':
-                        info_pdf = LectorPDF.obtener_info(archivo)
-                        if info_pdf["es_valido"]:
-                            info_extra = f"Páginas: {info_pdf['paginas']}"
+                # Listar contenido (carpetas y archivos)
+                for item in contenido:
+                    if item.is_dir():
+                        # Es una subcarpeta
+                        sub_node = self.tree.insert(folder_node, tk.END, values=(item.name, "Carpeta", "Contenido", str(item)))
+                        self.item_paths[sub_node] = item
+                    else:
+                        # Es un archivo
+                        tipo = item.suffix.upper()
+                        info_extra = ""
+                        tags = ()
+
+                        if tipo == '.PDF':
+                            info_pdf = LectorPDF.obtener_info(item)
+                            if info_pdf["es_valido"]:
+                                info_extra = f"Páginas: {info_pdf['paginas']}"
+                            else:
+                                info_extra = "PDF Inválido o Error"
+                            
+                            if factura not in item.name:
+                                tags = ("error",)
+                        
+                        elif tipo == '.ZIP':
+                            pass # Se procesa abajo
+                        
                         else:
-                            info_extra = "PDF Inválido o Error"
+                            # Otros archivos
+                            info_extra = "Archivo"
 
-                    # Determinar si el nombre del archivo contiene la factura
-                    tags = ()
-                    if tipo == '.PDF':
-                        if factura not in archivo.name:
-                             tags = ("error",)
+                        # Insertar nodo del archivo
+                        file_node = self.tree.insert(folder_node, tk.END, values=(item.name, tipo, "Archivo", info_extra), tags=tags)
+                        self.item_paths[file_node] = item
 
-                    # Insertar nodo del archivo
-                    file_node = self.tree.insert(folder_node, tk.END, values=(archivo.name, tipo, "Archivo", info_extra), tags=tags)
-                    self.item_paths[file_node] = archivo
-
-                    # Si es ZIP, listar contenido
-                    if tipo == '.ZIP':
-                        try:
-                            contenido_zip = LectorZIP.listar_contenido(archivo)
-                            for item in contenido_zip:
-                                tags_zip = ()
-                                if item.upper().endswith('.PDF') and factura not in item:
-                                    tags_zip = ("error",)
-                                self.tree.insert(file_node, tk.END, values=(item, "CONTENIDO ZIP", "", ""), tags=tags_zip)
-                        except Exception as e:
-                            print(f"Error listando ZIP {archivo}: {e}")
+                        # Si es ZIP, listar contenido
+                        if tipo == '.ZIP':
+                            try:
+                                contenido_zip = LectorZIP.listar_contenido(item)
+                                for zitem in contenido_zip:
+                                    tags_zip = ()
+                                    if zitem.upper().endswith('.PDF') and factura not in zitem:
+                                        tags_zip = ("error",)
+                                    zip_content_node = self.tree.insert(file_node, tk.END, values=(zitem, "CONTENIDO ZIP", "", ""), tags=tags_zip)
+                                    self.item_paths[zip_content_node] = (item, zitem)
+                            except Exception as e:
+                                print(f"Error listando ZIP {item}: {e}")
 
             elif item_path.is_file() and item_path.suffix.upper() == '.ZIP':
                 # Es un ZIP encontrado directamente como resultado principal
@@ -211,7 +255,8 @@ class App:
                         tags_zip = ()
                         if item.upper().endswith('.PDF') and factura not in item:
                             tags_zip = ("error",)
-                        self.tree.insert(zip_node, tk.END, values=(item, "CONTENIDO ZIP", "", ""), tags=tags_zip)
+                        zip_content_node = self.tree.insert(zip_node, tk.END, values=(item, "CONTENIDO ZIP", "", ""), tags=tags_zip)
+                        self.item_paths[zip_content_node] = (item_path, item)
                 except Exception as e:
                     print(f"Error listando ZIP principal {item_path}: {e}")
 
@@ -242,6 +287,46 @@ class App:
                 # Es contenido de un ZIP u otro elemento virtual
                 pass
 
+    def on_double_click(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.abrir_archivo(item)
+
+    def abrir_archivo(self, item=None):
+        if not item:
+            item = self.tree.selection()[0]
+        
+        path_data = self.item_paths.get(item)
+        if path_data:
+            try:
+                # Caso 1: Es un archivo dentro de un ZIP (Tuple: zip_path, member_name)
+                if isinstance(path_data, tuple):
+                    zip_path, member_name = path_data
+                    if zip_path.exists():
+                        # Extraer a carpeta temporal
+                        temp_dir = Path(tempfile.gettempdir()) / "BuscadorFacturasTemp"
+                        temp_dir.mkdir(exist_ok=True)
+                        extracted_path = LectorZIP.extraer_archivo(zip_path, member_name, temp_dir)
+                        
+                        if extracted_path:
+                            os.startfile(extracted_path)
+                            self.status_var.set(f"Abriendo temporal: {member_name}")
+                        else:
+                             messagebox.showerror("Error", f"No se pudo extraer {member_name}")
+                    else:
+                        messagebox.showwarning("Advertencia", f"El archivo ZIP ya no existe: {zip_path}")
+
+                # Caso 2: Es un archivo o carpeta real en disco
+                elif isinstance(path_data, Path):
+                    if path_data.exists():
+                        os.startfile(path_data)
+                        self.status_var.set(f"Abriendo: {path_data.name}")
+                    else:
+                        messagebox.showwarning("Advertencia", f"La ruta no existe: {path_data}")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo abrir el elemento: {e}")
+
     def abrir_ubicacion(self):
         item = self.tree.selection()[0]
         path = self.item_paths.get(item)
@@ -250,7 +335,10 @@ class App:
                 folder = path.parent
             else:
                 folder = path
-            os.startfile(folder)
+            try:
+                os.startfile(folder)
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo abrir la ubicación: {e}")
 
     def renombrar_elemento(self):
         item = self.tree.selection()[0]

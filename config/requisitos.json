@@ -1,16 +1,99 @@
 {
-    "eps_requirements": {
-        "SANITAS": {
-            "required_files": ["factura", "autorizacion", "rids", "historia_clinica"],
-            "zip_check": true
+    "common_files": [
+        {
+            "code": "EPI",
+            "name": "Epicrisis"
         },
-        "NUEVA_EPS": {
-            "required_files": ["factura", "voucher", "remision"],
-            "zip_check": false
+        {
+            "code": "PDX",
+            "name": "Resultados de procedimientos"
         },
-        "DEFAULT": {
-            "required_files": ["factura"],
-            "zip_check": false
+        {
+            "code": "DQX",
+            "name": "Descripcion quirurgica"
+        },
+        {
+            "code": "RAN",
+            "name": "Registro de anestesia"
+        },
+        {
+            "code": "CRC",
+            "name": "Comprobante de recibido"
+        },
+        {
+            "code": "TAP",
+            "name": "Traslado asistencial"
+        },
+        {
+            "code": "TNA",
+            "name": "Transporte no asistencial"
+        },
+        {
+            "code": "FAT",
+            "name": "Factura SOAT/ADRES"
+        },
+        {
+            "code": "FMO",
+            "name": "Factura material osteosíntesis"
+        },
+        {
+            "code": "OPF",
+            "name": "Orden facultativa"
+        },
+        {
+            "code": "LDP",
+            "name": "Lista precios"
+        },
+        {
+            "code": "HAU",
+            "name": "Hoja atención urgencia"
+        },
+        {
+            "code": "HAO",
+            "name": "Hoja atención odontológica"
+        },
+        {
+            "code": "HAM",
+            "name": "Hoja administración medicamentos"
         }
+    ],
+    "eps_config": {
+        "FAMISANAR": {
+            "factura": "FEV",
+            "evidencia": "PDE"
+        },
+        "SALUD TOTAL": {
+            "factura": "FV",
+            "evidencia": "OPF"
+        },
+        "COOSALUD": {
+            "factura": "FV",
+            "evidencia": "PDE"
+        },
+        "SANITAS": {
+            "factura": "FV",
+            "evidencia": "PDE"
+        },
+        "COMPENSAR": {
+            "factura": "FVS",
+            "evidencia": "PDE"
+        },
+        "NUEVA EPS": {
+            "factura": "HEV",
+            "evidencia": "OTR"
+        },
+        "FOMAG": {
+            "factura": "FEV",
+            "evidencia": "OPF"
+        },
+        "OTRA": {
+            "factura": "FEV",
+            "evidencia": "PDE"
+        }
+    },
+    "nit": "899999032",
+    "required_check_defaults": {
+        "factura": true,
+        "evidencia": false
     }
 }

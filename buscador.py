@@ -34,16 +34,16 @@ class Buscador:
         return resultados
     
     def listar_archivos(self, carpeta_path):
-        """Lista todos los archivos relevantes (PDF, ZIP) en una carpeta."""
-        archivos = []
+        """Lista todo el contenido (archivos y subcarpetas) de una carpeta."""
+        contenido = []
         try:
             path = Path(carpeta_path)
             if path.exists() and path.is_dir():
-                for file in path.iterdir():
-                    if file.is_file():
-                        if file.suffix.lower() in ['.pdf', '.zip']:
-                            archivos.append(file)
+                # Listar todo el contenido ordenado (carpetas primero, luego archivos)
+                items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+                for item in items:
+                    contenido.append(item)
         except Exception as e:
-             print(f"Error listando archivos en {carpeta_path}: {e}")
+             print(f"Error listando contenido en {carpeta_path}: {e}")
         
-        return archivos
+        return contenido

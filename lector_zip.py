@@ -37,3 +37,13 @@ class LectorZIP:
             if termino_busqueda.lower() in archivo.lower():
                 return True
         return False
+
+    @staticmethod
+    def extraer_archivo(zip_path, member_name, output_dir):
+        """Extrae un archivo específico del ZIP a un directorio de salida."""
+        try:
+           with zipfile.ZipFile(zip_path, 'r') as zf:
+               return zf.extract(member_name, output_dir)
+        except Exception as e:
+            print(f"Error extrayendo {member_name} de {zip_path}: {e}")
+            return None
