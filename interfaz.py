@@ -44,6 +44,11 @@ class App:
         self.factura = tk.StringVar()
         self.eps = tk.StringVar()
         self.nit = tk.StringVar(value="800218979")
+        
+        # Control de búsqueda asíncrona
+        self.search_timer = None
+        self.search_thread = None
+        self.stop_search_event = threading.Event()
 
         # Iconos (Generados programáticamente para no depender de archivos externos)
         # Icono PDF - Documento rojo con detalle
@@ -122,6 +127,8 @@ class App:
         ttk.Label(grid_frame, text="Nro. Factura(s):").grid(row=0, column=0, padx=5, pady=5)
         factura_entry = ttk.Entry(grid_frame, textvariable=self.factura)
         factura_entry.grid(row=0, column=1, padx=5, pady=5)
+        # Búsqueda incremental (mientras se escribe)
+        factura_entry.bind("<KeyRelease>", self.on_key_release)
         factura_entry.bind("<Return>", lambda event: self.iniciar_busqueda())
         
         # Tooltip o ayuda visual simple
@@ -178,6 +185,7 @@ class App:
         self.menu_contextual.add_command(label="Nueva Carpeta", command=self.crear_carpeta)
         self.menu_contextual.add_command(label="Importar Archivo", command=self.importar_archivo)
         self.menu_contextual.add_separator()
+        self.menu_contextual.add_command(label="Pegar Archivo", command=self.importar_archivo)
         self.menu_contextual.add_command(label="Renombrar", command=self.renombrar_elemento)
         self.menu_contextual.add_command(label="Eliminar", command=self.eliminar_elemento)
 
@@ -231,38 +239,59 @@ class App:
             self.ruta_raiz.set(directorio)
             self.buscador = Buscador(directorio)
 
+    def on_key_release(self, event):
+        """Maneja el evento de soltar tecla con debouncing."""
+        if self.search_timer:
+            self.root.after_cancel(self.search_timer)
+        
+        # Solo buscar si hay al menos 3 caracteres (ajustable)
+        if len(self.factura.get().strip()) >= 3:
+            self.search_timer = self.root.after(400, self.iniciar_busqueda)
+
     def iniciar_busqueda(self):
         root_dir = self.ruta_raiz.get()
         factura_input = self.factura.get()
         
         if not root_dir:
-            messagebox.showwarning("Advertencia", "Por favor seleccione una carpeta raíz.")
-            return
+            return # No molestar con diálogos en búsqueda incremental
+            
         if not factura_input:
-            messagebox.showwarning("Advertencia", "Por favor ingrese el número de factura.")
+            # Limpiar si no hay texto
+            self.item_paths.clear()
+            for item in self.tree.get_children():
+                self.tree.delete(item)
             return
 
-        # Procesar entrada de facturas (separar por comas, espacios o punto y coma)
+        # Detener búsqueda anterior si está corriendo
+        self.stop_search_event.set()
+        
+        # Procesar entrada de facturas
         import re
         facturas = [f.strip() for f in re.split(r'[,\s;]+', factura_input) if f.strip()]
         
         if not facturas:
-             messagebox.showwarning("Advertencia", "No se detectaron números de factura válidos.")
              return
 
         # Limpiar resultados anteriores
         self.item_paths.clear()
-        self.missing_invoices_var.set("") # Limpiar alerta de no encontrados
+        self.missing_invoices_var.set("")
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        self.status_var.set(f"Buscando {len(facturas)} facturas...")
-        self.root.update_idletasks()
+        self.status_var.set(f"Buscando...")
         
-        # Ejecutar en hilo para no congelar GUI
-        threading.Thread(target=self._proceso_busqueda, args=(facturas,), daemon=True).start()
+        # Nueva señal de parada
+        self.stop_search_event = threading.Event()
+        
+        # Ejecutar en hilo
+        self.search_thread = threading.Thread(
+            target=self._proceso_busqueda, 
+            args=(facturas, self.stop_search_event), 
+            daemon=True
+        )
+        self.search_thread.start()
 
-    def _proceso_busqueda(self, facturas):
+    def _proceso_busqueda(self, facturas, stop_event):
         eps = self.eps.get()
         nit_proveedor = self.nit.get()
 
@@ -274,8 +303,12 @@ class App:
         
         # Buscar para cada factura
         for factura in facturas:
+            if stop_event.is_set(): return
+            
             encontrado_algo = False
-            carpetas_encontradas = self.buscador.buscar_factura(factura)
+            carpetas_encontradas = self.buscador.buscar_factura(factura, stop_event=stop_event)
+            
+            if stop_event.is_set(): return
             
             # Buscar también archivos .sin/.icon
             # Nota: Esto debería idealmente estar en Buscador, pero lo agrego aquí rápido para no tocar lógica interna compleja
@@ -421,14 +454,16 @@ class App:
                 # No agregamos a item_paths por ahora si no queremos acción de abrir, o sí:
                 # self.item_paths[...toca crear nodo...] - simplificado arriba
 
+        if stop_event.is_set(): return
+        
         if facturas_no_encontradas:
              msg = f"Facturas NO encontradas: {', '.join(facturas_no_encontradas)}"
              self.root.after(0, lambda: self.missing_invoices_var.set(msg))
         
         if total_carpetas == 0 and not facturas_no_encontradas:
-             self.root.after(0, lambda: messagebox.showinfo("Información", "No se encontraron resultados."))
-
-        self.root.after(0, lambda: self.status_var.set(f"Búsqueda finalizada. {total_carpetas} coincidencias."))
+             self.root.after(0, lambda: self.status_var.set("No se encontraron resultados."))
+        else:
+             self.root.after(0, lambda: self.status_var.set(f"Búsqueda finalizada. {total_carpetas} coincidencias."))
 
     def mostrar_menu_contextual(self, event):
         item = self.tree.identify_row(event.y)
@@ -437,10 +472,14 @@ class App:
             # Habilitar/Deshabilitar opciones según tipo
             path = self.item_paths.get(item)
             
-            if path:
+            if isinstance(path, Path):
                 # Es un archivo o carpeta real
-                self.menu_contextual.entryconfig("Nueva Carpeta", state="normal" if path.is_dir() else "disabled")
-                self.menu_contextual.entryconfig("Importar Archivo", state="normal" if path.is_dir() else "disabled")
+                is_dir = path.is_dir()
+                self.menu_contextual.entryconfig("Nueva Carpeta", state="normal" if is_dir else "disabled")
+                self.menu_contextual.entryconfig("Importar Archivo", state="normal" if is_dir else "disabled")
+                self.menu_contextual.entryconfig("Pegar Archivo", state="normal" if is_dir or path.suffix.lower() == '.zip' else "disabled")
+                self.menu_contextual.entryconfig("Renombrar", state="normal")
+                self.menu_contextual.entryconfig("Eliminar", state="normal")
                 
                 # Opción para ver PDF
                 if path.is_file() and path.suffix.upper() == '.PDF':
@@ -452,8 +491,15 @@ class App:
 
                 self.menu_contextual.post(event.x_root, event.y_root)
             else:
-                # Es contenido de un ZIP u otro elemento virtual
-                pass
+                # Es contenido de un ZIP (Tupla)
+                self.menu_contextual.entryconfig("Nueva Carpeta", state="disabled")
+                self.menu_contextual.entryconfig("Importar Archivo", state="disabled")
+                self.menu_contextual.entryconfig("Pegar Archivo", state="disabled")
+                self.menu_contextual.entryconfig("Renombrar", state="disabled") # No soportado en ZIP por ahora
+                self.menu_contextual.entryconfig("Eliminar", state="normal")
+                
+                self.menu_contextual.delete("Ver Contenido PDF")
+                self.menu_contextual.post(event.x_root, event.y_root)
 
     def on_double_click(self, event):
         item = self.tree.identify_row(event.y)
@@ -530,19 +576,62 @@ class App:
         path = self.item_paths.get(item)
         if not path: return
 
-        confirm = messagebox.askyesno("Confirmar Eliminación", f"¿Está seguro de eliminar '{path.name}'?\nEsta acción no se puede deshacer.")
+        confirm = messagebox.askyesno("Confirmar Eliminación", f"¿Está seguro de eliminar este elemento?\nEsta acción no se puede deshacer.")
         if confirm:
             try:
-                if path.is_dir():
-                    shutil.rmtree(path)
+                # Detectar si es elemento de ZIP (Tupla) o real (Path)
+                if isinstance(path, tuple):
+                    zip_path, member_name = path
+                    if LectorZIP.eliminar_archivo(zip_path, member_name):
+                        self.tree.delete(item)
+                        del self.item_paths[item]
+                        self.status_var.set(f"Eliminado de ZIP: {member_name}")
+                        self._actualizar_estado_padre(item)
                 else:
-                    path.unlink()
-                
-                self.tree.delete(item)
-                del self.item_paths[item]
-                self.status_var.set(f"Eliminado: {path.name}")
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    
+                    self.tree.delete(item)
+                    del self.item_paths[item]
+                    self.status_var.set(f"Eliminado: {path.name}")
+                    self._actualizar_estado_padre(item)
             except Exception as e:
                  messagebox.showerror("Error", f"No se pudo eliminar: {e}")
+
+    def _actualizar_estado_padre(self, item_modificado):
+        """
+        Busca el nodo raíz de la factura o el nodo de carpeta/ZIP principal 
+        y vuelve a calcular su estado (color y conteo de PDFs).
+        """
+        parent = self.tree.parent(item_modificado)
+        if not parent: return
+        
+        # Encontrar el nodo que representa la carpeta o ZIP (el que tiene la ruta en item_paths)
+        target_node = item_modificado if item_modificado in self.item_paths and isinstance(self.item_paths[item_modificado], Path) else parent
+        
+        # Si el target_node es contenido de un ZIP, subir un nivel más
+        if target_node in self.item_paths and isinstance(self.item_paths[target_node], tuple):
+            target_node = self.tree.parent(target_node)
+
+        path = self.item_paths.get(target_node)
+        if not path or not path.exists(): return
+
+        # Recalcular conteo de PDFs
+        num_pdfs = self._contar_pdfs(path)
+        es_completa = num_pdfs >= 4
+        tag_color = "carpeta_verde" if es_completa else "carpeta_naranja"
+        estado_texto = f"Encontrada ({num_pdfs} PDFs)" if path.is_dir() else f"Encontrado ({num_pdfs} PDFs)"
+        
+        # Actualizar valores visuales
+        vals = list(self.tree.item(target_node, "values"))
+        vals[1] = estado_texto
+        self.tree.item(target_node, values=vals, tags=(tag_color,))
+        
+        # Opcional: Re-verificar la factura completa (lógica de EPS)
+        # Esto requiere el número de factura y la EPS, que podemos extraer del nodo abuelo si es necesario
+        # Por ahora, con el conteo de PDFs y el color es suficiente para el requerimiento visual.
 
     def crear_carpeta(self):
         item = self.tree.selection()[0]
@@ -564,32 +653,39 @@ class App:
 
     def importar_archivo(self):
         item = self.tree.selection()[0]
-        parent_path = self.item_paths.get(item)
-        if not parent_path or not parent_path.is_dir(): return
+        dest_path = self.item_paths.get(item)
+        if not dest_path: return
 
         filepath = filedialog.askopenfilename(title="Seleccionar archivo para importar")
         if filepath:
             src = Path(filepath)
-            dest = parent_path / src.name
+            
             try:
-                shutil.copy2(src, dest)
-                 # Insertar en treeview
-                tipo = src.suffix.upper()
-                img = self.img_pdf if tipo == '.PDF' else ""
-                node = self.tree.insert(item, tk.END, text=src.name, image=img, values=(tipo, "Importado", ""))
-                self.item_paths[node] = dest
-                self.tree.item(item, open=True)
+                # Caso ZIP
+                if dest_path.is_file() and dest_path.suffix.lower() == '.zip':
+                    if LectorZIP.agregar_archivo(dest_path, src):
+                        # Insertar en treeview bajo el ZIP
+                        img = self.img_pdf if src.suffix.upper() == '.PDF' else ""
+                        node = self.tree.insert(item, tk.END, text=src.name, image=img, values=("CONTENIDO ZIP", "Agregado", ""))
+                        self.item_paths[node] = (dest_path, src.name)
+                        self.tree.item(item, open=True)
+                        self.status_var.set(f"Agregado al ZIP: {src.name}")
                 
-                # Si es ZIP, intentar expandir (opcional, pero consistente)
-                if tipo == '.ZIP':
-                     try:
-                        contenido_zip = LectorZIP.listar_contenido(dest)
-                        for zitem in contenido_zip:
-                             img_zip = self.img_pdf if zitem.upper().endswith('.PDF') else ""
-                             self.tree.insert(node, tk.END, text=zitem, image=img_zip, values=("CONTENIDO ZIP", "", ""))
-                     except: pass
+                # Caso Carpeta
+                elif dest_path.is_dir():
+                    dest = dest_path / src.name
+                    shutil.copy2(src, dest)
+                    # Insertar en treeview
+                    tipo = src.suffix.upper()
+                    img = self.img_pdf if tipo == '.PDF' else ""
+                    node = self.tree.insert(item, tk.END, text=src.name, image=img, values=(tipo, "Importado", ""))
+                    self.item_paths[node] = dest
+                    self.tree.item(item, open=True)
+                    self.status_var.set(f"Archivo importado: {src.name}")
+                
+                # Siempre re-verificar colores de carpetas/ZIPs después de importar
+                # (Idealmente llamar a una función que refresque el nodo raíz de la factura)
 
-                self.status_var.set(f"Archivo importado: {src.name}")
             except Exception as e:
                  messagebox.showerror("Error", f"No se pudo importar: {e}")
 

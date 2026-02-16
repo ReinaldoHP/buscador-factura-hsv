@@ -5,32 +5,38 @@ class Buscador:
     def __init__(self, root_dir):
         self.root_dir = Path(root_dir)
 
-    def buscar_factura(self, numero_factura):
+    def buscar_factura(self, numero_factura, stop_event=None):
         """
-        Busca una carpeta que contenga el número de factura en su nombre.
+        Busca carpetas o archivos ZIP que contengan el número de factura.
+        Optimizado usando os.scandir para mayor velocidad.
         """
-        # Convertir a cadena para facilitar la búsqueda
-        numero_factura = str(numero_factura)
+        numero_factura = str(numero_factura).lower()
         resultados = []
 
-        try:
-            # Recorrer el directorio raíz
-            for root, dirs, files in os.walk(self.root_dir):
-                dirpath = Path(root)
-                dirname = dirpath.name
+        def _escanear(path):
+            if stop_event and stop_event.is_set():
+                return
+            
+            try:
+                with os.scandir(path) as it:
+                    for entry in it:
+                        if stop_event and stop_event.is_set():
+                            break
+                        
+                        if entry.is_dir():
+                            if numero_factura in entry.name.lower():
+                                resultados.append(Path(entry.path))
+                            # Búsqueda recursiva
+                            _escanear(entry.path)
+                        elif entry.is_file() and entry.name.lower().endswith('.zip'):
+                            if numero_factura in entry.name.lower():
+                                resultados.append(Path(entry.path))
+            except PermissionError:
+                pass
+            except Exception as e:
+                print(f"Error escaneando {path}: {e}")
 
-                # Verificar si el nombre de la carpeta contiene el número de factura
-                if numero_factura in dirname:
-                     resultados.append(dirpath)
-
-                # Verificar si hay archivos ZIP que contengan el número de factura
-                for file in files:
-                    if file.lower().endswith('.zip') and numero_factura in file:
-                        resultados.append(dirpath / file)
-        except Exception as e:
-            print(f"Error durante la búsqueda: {e}")
-            return []
-
+        _escanear(self.root_dir)
         return resultados
     
     def listar_archivos(self, carpeta_path):
